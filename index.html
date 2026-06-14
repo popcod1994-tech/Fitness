@@ -697,7 +697,8 @@ let STATE = {
   // sessions[dateStr] = { saved: true, exData: {exId: {sets:[...]}} }
   sessions: {},
   // pullup band tracking
-  pullupBandIdx: 0
+  pullupBandIdx: 0,
+  swaps: {}
 };
 function loadState() {
   const s = localStorage.getItem(STORE_KEY);
@@ -706,12 +707,13 @@ function loadState() {
   if (!STATE.exercises) STATE.exercises = {};
   if (!STATE.sessions) STATE.sessions = {};
   if (STATE.pullupBandIdx === undefined) STATE.pullupBandIdx = 0;
+  if (!STATE.swaps) STATE.swaps = {};
 }
 function saveState() { try { localStorage.setItem(STORE_KEY, JSON.stringify(STATE)); } catch(e) {} }
 
-function todayStr() { return new Date().toISOString().slice(0,10); }
+function todayStr() { return strFromDate(new Date()); }
 function dateFromStr(s) { return new Date(s + 'T00:00:00'); }
-function strFromDate(d) { return d.toISOString().slice(0,10); }
+function strFromDate(d) { const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), day=String(d.getDate()).padStart(2,'0'); return y+'-'+m+'-'+day; }
 function addDays(s, n) { const d = dateFromStr(s); d.setDate(d.getDate()+n); return strFromDate(d); }
 function daysSince(s) { return Math.floor((dateFromStr(todayStr()) - dateFromStr(s)) / 86400000); }
 
@@ -1203,7 +1205,6 @@ function refreshExerciseCard(exId, dateStr) {
     wrapper.innerHTML = html;
     container.replaceWith(wrapper.firstElementChild);
   });
-  updateSaveButtonState(dateStr);
 }
 
 function updateSaveButtonState(dateStr) {
@@ -1256,15 +1257,22 @@ function renderWorkoutBlock(dateStr, dIdx, phaseNum, dow, interactive) {
 
   if (!w.exIds.length && !w.restNote) html += '<div class="empty-state">Rest day. Walk, hydrate, sleep.</div>';
 
-  if (interactive && (w.exIds.length > 0)) {
-    html += '<div class="save-bar"><button class="primary" id="save-btn-' + dateStr + '" onclick="saveWorkout(\'' + dateStr + '\',' + dIdx + ',' + phaseNum + ',' + dow + ')" disabled>💾 Save Workout</button></div>';
+  if (interactive) {
+    const hasExercises = w.exIds.length > 0;
+    const swapLabel = '🔄 Swap Workout';
+    const allTypes = ['push','run','pull','cardio','upper','track','rest'];
+    html += '<div style="display:flex;gap:8px;margin-top:16px;">' +
+      '<button class="secondary" style="flex:0 0 auto;font-size:12px;padding:12px 14px;" onclick="openSwapWorkout(\'' + dateStr + '\',' + dIdx + ',' + phaseNum + ',' + dow + ')">' + swapLabel + '</button>' +
+      '<button class="primary" style="flex:1;padding:16px;font-size:15px;box-shadow:0 4px 20px rgba(0,0,0,0.4);" onclick="saveWorkout(\'' + dateStr + '\',' + dIdx + ',' + phaseNum + ',' + dow + ')">💾 Save Workout</button>' +
+      '</div>';
   }
 
   return html;
 }
 
 function saveWorkout(dateStr, dIdx, phaseNum, dow) {
-  const w = getWorkoutExercises(phaseNum, dow, dateStr);
+  const swap = STATE.swaps && STATE.swaps[dateStr];
+  const w = swap ? getWorkoutExercises(phaseNum, swap.dow, dateStr) : getWorkoutExercises(phaseNum, dow, dateStr);
   const exData = {};
   const messages = [];
   w.exIds.forEach(function(exId) {
@@ -1284,6 +1292,11 @@ function saveWorkout(dateStr, dIdx, phaseNum, dow) {
       if (result) messages.push(result.msg);
     }
   });
+  const totalLogged = Object.keys(exData).length;
+  if (totalLogged === 0) {
+    toast('Log at least one set before saving');
+    return;
+  }
   STATE.sessions[dateStr] = { saved: true, exData: exData };
   saveState();
   closeModal();
@@ -1291,7 +1304,7 @@ function saveWorkout(dateStr, dIdx, phaseNum, dow) {
   if (messages.length) {
     showSaveSummary(messages);
   } else {
-    toast('Workout saved');
+    toast('Workout saved ✓');
   }
 }
 
@@ -1305,6 +1318,73 @@ function showSaveSummary(messages) {
   });
   h += '<button class="primary" style="width:100%; margin-top:8px;" onclick="closeModal()">Done</button>';
   showModal(h);
+}
+
+// ============================================
+// WORKOUT SWAP
+// ============================================
+var SWAP_OPTIONS = [
+  { label:'Push Day', subtitle:'Bench · OHP · Dips · Push-ups', dow:1 },
+  { label:'Run / Treadmill', subtitle:'Easy or tempo run', dow:2 },
+  { label:'Pull + Legs', subtitle:'Deadlift · Row · Pull-ups · Squat', dow:3 },
+  { label:'Cross-Train Cardio', subtitle:'Bike · Core', dow:4 },
+  { label:'Upper Mixed', subtitle:'Light bench · DB rows · Push-up volume', dow:5 },
+  { label:'Track / Sprints', subtitle:'Speed work · Stopwatch', dow:6 },
+  { label:'Rest / Walk', subtitle:'Active recovery only', dow:0 }
+];
+var SWAP_CTX = {};
+
+function openSwapWorkout(dateStr, dIdx, phaseNum, origDow) {
+  if (!STATE.swaps) STATE.swaps = {};
+  SWAP_CTX = { dateStr:dateStr, dIdx:dIdx, phaseNum:phaseNum, origDow:origDow };
+  const currentDow = (STATE.swaps[dateStr] && STATE.swaps[dateStr].dow != null) ? STATE.swaps[dateStr].dow : origDow;
+  let h = '<div class="row-flex between" style="margin-bottom:12px;">' +
+    '<div style="font-weight:700;font-size:16px;">Swap Workout</div>' +
+    '<button class="modal-close" onclick="closeModal()">X</button></div>' +
+    '<div style="font-size:12px;color:var(--text-dim);margin-bottom:12px;">Raining, short on time, or want something different? Pick any workout.</div>';
+  SWAP_OPTIONS.forEach(function(opt, i) {
+    const isActive = opt.dow === currentDow;
+    h += '<div onclick="applySwap(' + i + ')" style="' +
+      'background:' + (isActive ? 'rgba(255,107,31,0.12)' : 'var(--bg-elevated)') + ';' +
+      'border:1px solid ' + (isActive ? 'rgba(255,107,31,0.5)' : 'var(--border)') + ';' +
+      'border-radius:10px;padding:14px;margin-bottom:8px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;">' +
+      '<div><div style="font-weight:700;font-size:14px;">' + opt.label + '</div>' +
+      '<div style="font-size:12px;color:var(--text-dim);margin-top:2px;">' + opt.subtitle + '</div></div>' +
+      (isActive ? '<div style="color:var(--accent);font-weight:800;font-size:12px;">CURRENT</div>' : '') +
+      '</div>';
+  });
+  if (STATE.swaps[dateStr]) {
+    h += '<button class="secondary" style="width:100%;margin-top:4px;" onclick="clearSwap()">Reset to original workout</button>';
+  }
+  showModal(h, false, false);
+}
+
+function applySwap(optIdx) {
+  var ctx = SWAP_CTX;
+  var opt = SWAP_OPTIONS[optIdx];
+  if (!STATE.swaps) STATE.swaps = {};
+  STATE.swaps[ctx.dateStr] = { dow: opt.dow, origDow: ctx.origDow };
+  saveState();
+  closeModal();
+  if (ctx.dateStr === todayStr()) {
+    renderToday();
+  } else {
+    showDayDetail(ctx.dateStr, ctx.dIdx, ctx.phaseNum, opt.dow);
+  }
+  toast('Workout swapped to: ' + opt.label);
+}
+
+function clearSwap() {
+  var ctx = SWAP_CTX;
+  if (STATE.swaps) delete STATE.swaps[ctx.dateStr];
+  saveState();
+  closeModal();
+  if (ctx.dateStr === todayStr()) {
+    renderToday();
+  } else {
+    showDayDetail(ctx.dateStr, ctx.dIdx, ctx.phaseNum, ctx.origDow);
+  }
+  toast('Restored original workout');
 }
 
 function renderToday() {
@@ -1323,13 +1403,19 @@ function renderToday() {
     ? 'Starts ' + previewDate.toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'}) + ' — T-' + Math.abs(dayIdxRaw)
     : previewDate.toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
 
+  // Check for swapped workout
+  const swapData = STATE.swaps && STATE.swaps[previewDateStr];
+  const effectiveDow = (!notStarted && swapData) ? swapData.dow : dow;
+
   let html = '';
   if (notStarted) {
     html += '<div class="next-time-banner" style="margin-bottom:10px;"><strong style="color:var(--accent);">Program starts ' + previewDate.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'}) + '.</strong> Day 1 preview below — logging unlocks then.</div>';
   }
-  html += renderWorkoutBlock(previewDateStr, dayIdx, phase.num, dow, !notStarted);
+  if (!notStarted && swapData) {
+    html += '<div style="background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.25);border-radius:8px;padding:8px 12px;font-size:12px;margin-bottom:10px;color:var(--blue);">🔄 Swapped from original schedule</div>';
+  }
+  html += renderWorkoutBlock(previewDateStr, dayIdx, phase.num, effectiveDow, !notStarted);
   document.getElementById('today-workout').innerHTML = html;
-  if (!notStarted) updateSaveButtonState(previewDateStr);
 
   document.getElementById('gtg-count').textContent = STATE.gtg[todayStr()] || 0;
   const gtgTargets = {1:40,2:50,3:60,4:60,5:50,6:40};
@@ -1411,7 +1497,12 @@ function showDayDetail(dateStr, dIdx, phaseNum, dow) {
     : '<span class="badge" style="background:rgba(136,136,136,0.15); color:var(--text-dim);">PAST</span>';
   // Allow logging for today and past days (catch-up logging), not future
   const interactive = !isFuture;
-  const body = renderWorkoutBlock(dateStr, dIdx, phaseNum, dow, interactive);
+  // Check for swapped workout
+  const swapInfo = STATE.swaps && STATE.swaps[dateStr];
+  const effectiveDow = (interactive && swapInfo) ? swapInfo.dow : dow;
+  let swapBanner = '';
+  if (interactive && swapInfo) swapBanner = '<div style="background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.25);border-radius:8px;padding:8px 12px;font-size:12px;margin-bottom:10px;color:var(--blue);">🔄 Swapped from original schedule</div>';
+  const body = swapBanner + renderWorkoutBlock(dateStr, dIdx, phaseNum, effectiveDow, interactive);
   showModal(
     '<div data-future="' + (isFuture?'1':'0') + '">' +
     '<div class="row-flex between" style="margin-bottom:12px;"><div>' +
@@ -1424,7 +1515,6 @@ function showDayDetail(dateStr, dIdx, phaseNum, dow) {
     '<button class="secondary" onclick="navDay(\'' + dateStr + '\',-1)">← Prev</button>' +
     '<button class="secondary" onclick="navDay(\'' + dateStr + '\',1)">Next →</button></div></div>',
     false, true);
-  if (interactive) updateSaveButtonState(dateStr);
 }
 function navDay(dateStr, delta) {
   const newStr = addDays(dateStr, delta);
